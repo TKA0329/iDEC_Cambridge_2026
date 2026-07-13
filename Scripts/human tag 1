@@ -1,0 +1,200 @@
+# ===========================================
+# Human IDR Solubility Tag Finder
+# Version 2: GRAVY + Net Charge based scoring
+# ===========================================
+MIN_LENGTH = 20
+MAX_LENGTH = 45
+
+# -------------------------------------------
+# Example IDRs (FAKE sequences for testing)
+# -------------------------------------------
+idrs = {
+    "BRCA1_IDR1":
+    "EYANSYNFAKKENNSPEHLKDEVSIIQSMGYRNRAKRLLQSEPENPSLQETSLSVQLSNLGTVRTLRTKQRIQPQKTSVYIELGSDSSEDTVNKATYCSVGDQELLQITPQGTRDEISLDSAKKAACEFSETDVTNTEHHQPSNNDLNTTEKRAAERHPEKYQGSSVSNLHVEPCGTNTHASSLQHENSSLLLTKDRMNVEKAEFCNKSKQPGLARSQHNRWAGSKETCNDRRTPSTEKKVDLNADPLCERKEWNKQKLPCSENPRDTEDVPWITLNSSIQKVNEWFSRSDELLGSDDSHDGESESNAKVADVLDVLNEVDEYSGSSEKIDLLASDPHEALICKSERVHSKSVESNIEDKIFGKTYRKKASLPNLSHVTENLIIGAFVTEPQIIQERPLTNKLKRKRRPTSGLHPEDFIKKADLAVQKTPEMINQGTNQTEQNGQVMNITNSGHENKTKGDSIQNEKNPNPIESLEKESAFKTKAEPISSSISNMELELNIHNSKAPKKNRLRRKSSTRHIHALELVVSRNLSPPNCTELQIDSCSSSEEIKKKKYNQMPVRHSRNLQLMEGKEPATGAKKSNKPNEQTSKRHDSDTFPELKLTNAPGSFTKCSNTSELKEFVNPSLPREEKEEKLETVKVSNNAEDPKDLMLSGERVLQTERSVESSSISLVPGTDYGTQESISLLEVSTLGKAKTEPNKCVSQCAAFENPKGLIHGCSKDNRNDTEGFKYPLGHEVNHSRETSIEMEESELDAQYLQNTFKVSKRQSFAPFSNPGNAEEECATFSAHSGSLKKQSPKVTFECEQKEENQGKNESNIKPVQTVNITAGFPVVGQKDKPVDNAKCSIKGGSRFCLSSQFRGNETGLITPNKHGLLQNPYRIPPLFPIKSFVKTKCKKNLLEENFEEHSMSPEREMGNENIPSTVSTISRNNIRENVFKEASSSNINEVGSSTNEVGSSINEIGSSDENIQAELGRNRGPKLNAMLRLGVLQPEVYKQSLPGSNCKHPEIKKQEYEEVVQTVNTDFSPYLISDNLEQPMGSSHASQVCSETPDDLLDDGEIKEDTSFAENDIKESSAVFSKSVQKGELSRSPSPFTHTHLAQGYRRGAKKLESSEENLSSEDEELPCFQHLLFGKVNNIPSQSTRHSTVATECLSKNTEENLLSLKNSLNDCSNQVILAKASQEHHLSEETKCSASLFSSQCSELEDLTANTNTQDPFLIGSSKQMRHQSESQGVGLSDKELVSDDEERGTGLEENNQEEQSMDSNLGEAASGCESETSVSEDCSGLSSQSDILTTQQRDTMQHNLIKLQQEMAELEAVLEQHGSQPSNSYPSIISDSSALEDLRNPEQSTSEKAVLTSQKSSEYPISQNPEGLSADKFEVSADSSTSKNKEPGVERSSPSKCPSLDDRWYMHSCSGSLQNRNYPSQEELIKVVDVEEQQLEESGPHDLTETSYLPRQDLEGTPYLESGISLFSDDPESDPSEDRAPESARVGNIPSSTSALKVPQLKVAESAQSPAAAHTTDTAGYNAMEESVSREKPELTASTERVNKR",
+    "BRCA2_IDR1":
+    "EESEHKNNNYEPNLFKTPQRKPSYNQLASTPIIFKEQGLTLPLYQSPVKELDKFKLDLGRNVPNSRHKSLRTVKTKMDQADDVSCPLLNSCLSESPVVLQCTHVTPQRDKSVVCGSLFHTPKFVKGRQTPKHISESLGAEVDPDMSWSSSLATPPTLSSTVLIVRNEEASETVFPHDTTANVKSYFSNHDESLKKNDRFIASVTDSENTNQREAASHGFGKTSGNSFKVNSCKDHIG",
+    "P53_IDR1":
+    "MEEPQSDPSVEPPLSQETFSDLWKLLPENNVLSPLPSQAMDDLMLSPDDIEQWFTEDPGPDEAPRMPEAAPPVAPAPAAPTPAAPAPAPSWPLSSS",
+    "P53_IDR2":
+    "NLRKKGEPHHELPPGSTKRALPNNT",
+    "P53_IDR3":
+    "GSRAHSSHLKSKKGQSTSRHKKLMFKTEGPDSD",
+    "CDN1A_IDR1":
+    "MSEPAGDVRQNPCGSKACRRLFGPVDSEQLSRDCDALMAGCIQEARERWNFDFVTETPLEGDFAWERVRGLGLPKLYLPTGPRRGRDELGGGRRPGTSPALLQGTAEEDHVDLSLSCTLVPRSGEQAEGSPGGPGDSQGRKRRQTSMTDFYHSKRRLIFSKRKP",
+    "CDN1B_IDR1":
+    "MSNVRVSNGSPSLERMDARQAEHPKPSACRNLFGPVDHEELTRDLEKHCRDMEEASQRKWNFDFQNHKPLEGKYEWQEVEKGSLPEFYYRPPRPPKGACKVPAQESQDVSGSRPAAPLIGAPANSEDTHLVDPKTDPSDSQTGLAEQCAGIRKRPATDDSSTQNKRANRTEENVSDGSPNAGSVEQTPKKPGLRRRQT",
+    "RB_IDR1":
+    "PINGSPRTPRRGQNRSARIAKQLEN",
+    "RB-IDR2":
+    "DSIDSFETQRTPRKSNLDEEVNVIP",
+    "RB_IDR3":
+    "KDREGPTDHLESACPLNLPLQNNHTAADMYLSPVRSPKKKGSTTRVNSTANAETQATSAFQTQKPLKS",
+    "RB_IDR4":
+    "KDREGPTDHLESACPLNLPLQNNHTAADMYLSPVRSPKKKGSTTRVNSTANAETQATSAFQTQKPLKS",
+    "MDM2_IDR1":
+    "MCNTNMSVPTDGAVTTSQIPASEQETL",
+    "MDM2_IDR2":
+    "NLVVVNQQESSDSGTSVSENRCHLEGGSDQKDLVQELQEEKPSSS",
+    "MDM2_IDR3":
+    "SSSSESTGTPSNPDLDAGVSEHSGDWLDQDSVSDQFSVEFEVESLDSEDYSLSEEGQELSDEDDEVYQVTVYQAGESDTDSFEEDPEISLADYWK",
+    "MDM2_IDR4":
+    "GKDKGEISEKAKLENSTQAEEGFDVPDCKKTIVNDSRESCVEENDDKITQASQSQESEDYSQPSTSSSIIYSSQEDVKEFEREETQDKEESVESSLPLNAIEP",
+    "MYC_IDR1":
+    "MPLNVSFTNRNYDLDYDSVQPYFYCDEEENFYQQQQQSELQPPAPSEDIWKKFELLPTPPLSPSRRSGLCSPSYVAVTPFSLRGDNDGGGGSFSTADQLEMVTELLGGDMV",
+    "MYC_IDR2":
+    "HEETPPTTSSDSEEEQEDEEEIDVVSVEKRQAPGKRSESGSPSAGGHSKPPHSPLVLKRCHVSTHQHNYAAPPSTRKDYPAAKRVKLDSVRVLRQISNNRKC",
+    "MYC_IDR3":
+    "NVKRRTHNVLERQRRNELKRSFFALRDQIPELENNEKAPKVVILKKATAYILSVQAEEQKLISEEDLLRKRREQLKHKLEQLRNSCA"
+
+}
+
+# -------------------------------------------
+# Kyte-Doolittle hydropathy scale
+# (standard values used to compute GRAVY)
+# -------------------------------------------
+kyte_doolittle = {
+    "A":  1.8, "R": -4.5, "N": -3.5, "D": -3.5, "C":  2.5,
+    "Q": -3.5, "E": -3.5, "G": -0.4, "H": -3.2, "I":  4.5,
+    "L":  3.8, "K": -3.9, "M":  1.9, "F":  2.8, "P": -1.6,
+    "S": -0.8, "T": -0.7, "W": -0.9, "Y": -1.3, "V":  4.2
+}
+
+# -------------------------------------------
+# pKa values for charged/ionizable side chains
+# (used for net charge at physiological pH)
+# side chain pKa values (EMBOSS/Bjellqvist-style set)
+# -------------------------------------------
+pKa_side_chain = {
+    "D": 3.65, "E": 4.25, "C": 8.3, "Y": 10.1,
+    "H": 6.0,  "K": 10.53, "R": 12.48
+}
+pKa_n_term = 8.0
+pKa_c_term = 3.1
+
+PHYSIO_PH = 7.4  # pH used to evaluate net charge
+
+
+def gravy(fragment):
+    """Grand Average of Hydropathy: mean Kyte-Doolittle value.
+    More negative = more hydrophilic (solubility-favouring)."""
+    return sum(kyte_doolittle[aa] for aa in fragment) / len(fragment)
+
+
+def net_charge(fragment, pH=PHYSIO_PH):
+    """Approximate net charge at given pH using Henderson-Hasselbalch
+    on each ionizable residue plus the N- and C-termini."""
+    charge = 0.0
+
+    # N-terminus (positive when protonated)
+    charge += 1 / (1 + 10 ** (pH - pKa_n_term))
+    # C-terminus (negative when deprotonated)
+    charge -= 1 / (1 + 10 ** (pKa_c_term - pH))
+
+    for aa in fragment:
+        if aa in ("D", "E", "C", "Y"):
+            # acidic residues: negative when deprotonated
+            charge -= 1 / (1 + 10 ** (pKa_side_chain[aa] - pH))
+        elif aa in ("K", "R", "H"):
+            # basic residues: positive when protonated
+            charge += 1 / (1 + 10 ** (pH - pKa_side_chain[aa]))
+
+    return charge
+
+
+results = []
+
+# -------------------------------------------
+# Analyse every protein
+# -------------------------------------------
+for protein_name, sequence in idrs.items():
+    sequence = sequence.upper()
+
+    # Every tag length
+    for length in range(MIN_LENGTH, MAX_LENGTH + 1):
+
+        # Every possible fragment
+        for start in range(len(sequence) - length + 1):
+            fragment = sequence[start:start + length]
+
+            g = gravy(fragment)
+            charge = net_charge(fragment)
+            abs_charge_density = abs(charge) / len(fragment)
+            cysteines = fragment.count("C")
+
+            # --------------------------
+            # Updated scoring system
+            # --------------------------
+            # Lower GRAVY (more hydrophilic) -> higher score, so we
+            # subtract it directly (a negative GRAVY becomes a bonus).
+            # Higher charge density (either sign) -> more soluble,
+            # so we reward magnitude of net charge, not its sign.
+            score = (
+                -g * 2
+                + abs_charge_density * 10
+                - cysteines * 2
+            )
+
+            results.append({
+                "protein": protein_name,
+                "start": start + 1,
+                "end": start + length,
+                "length": length,
+                "sequence": fragment,
+                "score": score,
+                "gravy": g,
+                "net_charge": charge,
+                "charge_density": abs_charge_density,
+                "cysteines": cysteines
+            })
+
+# -------------------------------------------
+# Sort best -> worst
+# -------------------------------------------
+results = sorted(
+    results,
+    key=lambda x: x["score"],
+    reverse=True
+)
+
+# -------------------------------------------
+# Optional: remove near-duplicate/overlapping
+# fragments so the top hits aren't all the same
+# region shifted by a few residues.
+# Keeps the highest scoring fragment per protein
+# region, skipping any candidate that overlaps
+# by more than 50% with one already kept.
+# -------------------------------------------
+def overlap_fraction(a, b):
+    overlap_start = max(a["start"], b["start"])
+    overlap_end = min(a["end"], b["end"])
+    overlap_len = max(0, overlap_end - overlap_start + 1)
+    return overlap_len / min(a["length"], b["length"])
+
+
+deduped = []
+for r in results:
+    if r["protein"] not in [d["protein"] for d in deduped]:
+        deduped.append(r)
+        continue
+    same_protein = [d for d in deduped if d["protein"] == r["protein"]]
+    if all(overlap_fraction(r, d) < 0.5 for d in same_protein):
+        deduped.append(r)
+
+# -------------------------------------------
+# Print best 20 tags (deduplicated)
+# -------------------------------------------
+print("\nTOP CANDIDATE TAGS\n")
+for i, r in enumerate(deduped[:20], start=1):
+    print("=" * 60)
+    print(f"Rank: {i}")
+    print(f"Protein: {r['protein']}")
+    print(f"Residues: {r['start']} - {r['end']}")
+    print(f"Length: {r['length']} aa")
+    print(f"Score: {round(r['score'], 2)}")
+    print(f"GRAVY (hydropathy): {round(r['gravy'], 2)}")
+    print(f"Net charge (pH {PHYSIO_PH}): {round(r['net_charge'], 2)}")
+    print(f"Charge density: {round(r['charge_density'], 2)}")
+    print(f"Cysteines: {r['cysteines']}")
+    print(f"Sequence:\n{r['sequence']}")
+
+print("\nFinished!")
