@@ -1,3 +1,4 @@
+import math
 import random
 import os
 from collections import Counter
@@ -41,6 +42,45 @@ EXTENDED_CHARGE_COLUMNS = ["fcr", "ncpr"]
 CIDER_ANALYSIS_COLUMNS = ["cider_kappa"]
 STATUS_COLUMNS = ["error"]
 
+# ── CAHS motif-1 helix/amphipathicity scoring ────────────────────────────────
+# Ported from the CAHS motif1 filter pipeline. Scores a fixed helical motif
+# (construct residue numbering below) for helix propensity, hydrophobic
+# moment / amphipathic face occupancy, salt-bridge count, and Pro/Gly
+# "helix-breaker" content.
+CORE_START_RESNUM = 121
+MOTIF1_START_RESNUM = 124
+MOTIF1_END_RESNUM = 142
+
+# Pace & Scholtz (1998) helix propensity scale, kcal/mol (lower = more helix-favorable).
+PACE_SCHOLTZ = {
+    "A": 0.00, "R": 0.21, "N": 0.65, "D": 0.69, "C": 0.68,
+    "Q": 0.39, "E": 0.40, "G": 1.00, "H": 0.61, "I": 0.41,
+    "L": 0.21, "K": 0.26, "M": 0.24, "F": 0.54, "P": 3.16,
+    "S": 0.50, "T": 0.66, "W": 0.49, "Y": 0.53, "V": 0.61,
+}
+
+# Eisenberg consensus hydrophobicity scale, used for the helical hydrophobic moment.
+EISENBERG = {
+    "A": 0.62, "R": -2.53, "N": -0.78, "D": -0.90, "C": 0.29,
+    "Q": -0.85, "E": -0.74, "G": 0.48, "H": -0.40, "I": 1.38,
+    "L": 1.06, "K": -1.50, "M": 0.64, "F": 1.19, "P": 0.12,
+    "S": -0.18, "T": -0.05, "W": 0.81, "Y": 0.26, "V": 1.08,
+}
+
+CAHS_MOTIF1_DELTA_DEG = 100.0  # alpha-helix residues-per-turn angle
+
+CAHS_MOTIF1_COLUMNS = [
+    "motif1_sequence",
+    "pace_scholtz_sum",
+    "pace_scholtz_mean",
+    "hydrophobic_moment",
+    "helical_face_occupancy",
+    "salt_bridge_count",
+    "num_proline",
+    "num_glycine",
+    "helix_breaker_flag",
+]
+
 # ── Conservative substitution groups ─────────────────────────────────────────
 CONSERVATIVE_GROUPS = {
     "G": ["A"],
@@ -64,6 +104,117 @@ CONSERVATIVE_GROUPS = {
     "C": ["S", "A"],
     "P": ["A", "G"],
 }
+
+def extract_motif1(full_seq, motif_start=MOTIF1_START_RESNUM, motif_end=MOTIF1_END_RESNUM,
+                    core_start=CORE_START_RESNUM):
+    """Slice out the motif-1 helical segment using construct residue numbering."""
+    start_idx = motif_start - core_start
+    end_idx = motif_end - core_start + 1
+    return full_seq[start_idx:end_idx]
+
+
+def pace_scholtz_scores(seq):
+    """Sum and mean Pace & Scholtz helix-propensity score across a sequence."""
+    vals = [PACE_SCHOLTZ.get(aa) for aa in seq]
+    valid = [v for v in vals if v is not None]
+    if not valid:
+        return None, None
+    return sum(valid), sum(valid) / len(valid)
+
+
+def hydrophobic_moment_and_face(seq, delta_deg=CAHS_MOTIF1_DELTA_DEG):
+    """
+    Eisenberg hydrophobic moment (normalized by length) and the fraction of
+    hydrophobic residues sitting within 60 degrees of the moment vector
+    ("helical face occupancy").
+    """
+    delta_rad = math.radians(delta_deg)
+    sin_sum, cos_sum = 0.0, 0.0
+    angles, hydrophobic_flags = [], []
+
+    for i, aa in enumerate(seq):
+        h = EISENBERG.get(aa)
+        if h is None:
+            continue
+        angle = i * delta_rad
+        sin_sum += h * math.sin(angle)
+        cos_sum += h * math.cos(angle)
+        angles.append(angle)
+        hydrophobic_flags.append(h > 0)
+
+    n = len(seq)
+    if n == 0:
+        return None, None
+
+    moment = math.sqrt(sin_sum ** 2 + cos_sum ** 2) / n
+    moment_vector_angle = math.atan2(sin_sum, cos_sum)
+
+    if not any(hydrophobic_flags):
+        return moment, 0.0
+
+    on_face = total_hydrophobic = 0
+    for angle, is_hydrophobic in zip(angles, hydrophobic_flags):
+        if not is_hydrophobic:
+            continue
+        total_hydrophobic += 1
+        diff = abs(math.degrees(angle - moment_vector_angle)) % 360
+        diff = min(diff, 360 - diff)
+        if diff <= 60:
+            on_face += 1
+
+    face_score = on_face / total_hydrophobic if total_hydrophobic else None
+    return moment, face_score
+
+
+def salt_bridge_score(seq):
+    """Count i,i+3 / i,i+4 acidic-basic pairs (classic helical salt bridges)."""
+    acidic, basic = {"E", "D"}, {"K", "R"}
+    count = 0
+    n = len(seq)
+    for i in range(n):
+        for offset in (3, 4):
+            j = i + offset
+            if j >= n:
+                continue
+            if (seq[i] in acidic and seq[j] in basic) or (seq[i] in basic and seq[j] in acidic):
+                count += 1
+    return count
+
+
+def helix_breaker_flags(seq):
+    """Pro/Gly counts and a combined hard-filter flag (either one breaks helix)."""
+    n_pro, n_gly = seq.count("P"), seq.count("G")
+    return n_pro, n_gly, (n_pro > 0 or n_gly > 0)
+
+
+def analyze_cahs_motif1(full_seq, motif_start=MOTIF1_START_RESNUM, motif_end=MOTIF1_END_RESNUM,
+                         core_start=CORE_START_RESNUM):
+    """
+    Score the CAHS motif-1 helical segment of a full-length sequence.
+    Returns a dict matching CAHS_MOTIF1_COLUMNS. `full_seq` should already be
+    cleaned (uppercase, no whitespace) -- analyze_sequence() does this before
+    calling in.
+    """
+    motif1_seq = extract_motif1(full_seq, motif_start=motif_start, motif_end=motif_end,
+                                 core_start=core_start)
+
+    ps_sum, ps_mean = pace_scholtz_scores(motif1_seq)
+    moment, face_score = hydrophobic_moment_and_face(motif1_seq)
+    sb_score = salt_bridge_score(motif1_seq)
+    n_pro, n_gly, breaker_flag = helix_breaker_flags(motif1_seq)
+
+    return {
+        "motif1_sequence": motif1_seq,
+        "pace_scholtz_sum": round(ps_sum, 3) if ps_sum is not None else None,
+        "pace_scholtz_mean": round(ps_mean, 3) if ps_mean is not None else None,
+        "hydrophobic_moment": round(moment, 3) if moment is not None else None,
+        "helical_face_occupancy": round(face_score, 3) if face_score is not None else None,
+        "salt_bridge_count": sb_score,
+        "num_proline": n_pro,
+        "num_glycine": n_gly,
+        "helix_breaker_flag": breaker_flag,
+    }
+
 
 def read_csv_safe(path_or_buffer, **kwargs):
     """
@@ -177,7 +328,8 @@ def calculate_cider_kappa(seq):
     except Exception:
         return None
 
-def analyze_sequence(seq, include_extended_charge_metrics=True, include_cider_kappa=True):
+def analyze_sequence(seq, include_extended_charge_metrics=True, include_cider_kappa=True,
+                      include_cahs_motif1=False):
     seq = str(seq).strip().upper().replace(" ", "").replace("\n", "")
     bad = set(seq) - set(VALID_AA)
     if bad:
@@ -191,7 +343,7 @@ def analyze_sequence(seq, include_extended_charge_metrics=True, include_cider_ka
         positive_res = counts["R"] + counts["K"]
         negative_res = counts["D"] + counts["E"]
         helix_sheet_sum = helix + sheet
-        return {
+        result = {
             "length": len(seq),
             "molecular_weight": round(pa.molecular_weight(), 2),
             "isoelectric_point": round(pa.isoelectric_point(), 2),
@@ -212,16 +364,25 @@ def analyze_sequence(seq, include_extended_charge_metrics=True, include_cider_ka
             "cider_kappa": calculate_cider_kappa(seq) if include_cider_kappa else None,
             "error": "",
         }
+        if include_cahs_motif1:
+            try:
+                result.update(analyze_cahs_motif1(seq))
+            except Exception as e:
+                result["error"] = f"cahs_motif1: {e}"
+        return result
     except Exception as e:
         return {"error": str(e)}
 
 
-def get_requested_analysis_columns(include_extended_charge_metrics=True, include_cider_kappa=True):
+def get_requested_analysis_columns(include_extended_charge_metrics=True, include_cider_kappa=True,
+                                    include_cahs_motif1=False):
     columns = list(CORE_ANALYSIS_COLUMNS)
     if include_extended_charge_metrics:
         columns.extend(EXTENDED_CHARGE_COLUMNS)
     if include_cider_kappa:
         columns.extend(CIDER_ANALYSIS_COLUMNS)
+    if include_cahs_motif1:
+        columns.extend(CAHS_MOTIF1_COLUMNS)
     columns.extend(STATUS_COLUMNS)
     return columns
 
@@ -242,6 +403,7 @@ def screen_analysis_columns(
     df,
     include_extended_charge_metrics=True,
     include_cider_kappa=True,
+    include_cahs_motif1=False,
     force_recompute_mask=None,
 ):
     """
@@ -254,6 +416,7 @@ def screen_analysis_columns(
     requested_columns = get_requested_analysis_columns(
         include_extended_charge_metrics=include_extended_charge_metrics,
         include_cider_kappa=include_cider_kappa,
+        include_cahs_motif1=include_cahs_motif1,
     )
 
     if force_recompute_mask is None:
@@ -300,6 +463,7 @@ def ensure_analysis_columns(
     df,
     include_extended_charge_metrics=True,
     include_cider_kappa=True,
+    include_cahs_motif1=False,
 ):
     """
     Ensure requested analyzer columns exist in a dataframe. Missing status
@@ -309,6 +473,7 @@ def ensure_analysis_columns(
     requested_columns = get_requested_analysis_columns(
         include_extended_charge_metrics=include_extended_charge_metrics,
         include_cider_kappa=include_cider_kappa,
+        include_cahs_motif1=include_cahs_motif1,
     )
 
     normalized_df = df.copy()
@@ -329,6 +494,7 @@ def merge_analysis_results(
     results_df,
     include_extended_charge_metrics=True,
     include_cider_kappa=True,
+    include_cahs_motif1=False,
     force_recompute_mask=None,
 ):
     """
@@ -339,6 +505,7 @@ def merge_analysis_results(
     requested_columns = get_requested_analysis_columns(
         include_extended_charge_metrics=include_extended_charge_metrics,
         include_cider_kappa=include_cider_kappa,
+        include_cahs_motif1=include_cahs_motif1,
     )
 
     if force_recompute_mask is None:
@@ -724,6 +891,7 @@ def analyze_sequences_parallel(
     use_processes=False,
     include_extended_charge_metrics=True,
     include_cider_kappa=True,
+    include_cahs_motif1=False,
     max_pending_tasks=None,
 ):
     """
@@ -736,6 +904,7 @@ def analyze_sequences_parallel(
         use_processes: Use ProcessPoolExecutor when True; ThreadPoolExecutor when False (default)
         include_extended_charge_metrics: Include FCR and NCPR in output
         include_cider_kappa: Include localCIDER kappa in output (slowest metric)
+        include_cahs_motif1: Include CAHS motif-1 helix/amphipathicity scoring in output
         max_pending_tasks: Max number of in-flight futures to keep queued
 
     Returns:
@@ -777,6 +946,7 @@ def analyze_sequences_parallel(
                 str(seq),
                 include_extended_charge_metrics=include_extended_charge_metrics,
                 include_cider_kappa=include_cider_kappa,
+                include_cahs_motif1=include_cahs_motif1,
             )
             future_to_index[future] = idx
             return True

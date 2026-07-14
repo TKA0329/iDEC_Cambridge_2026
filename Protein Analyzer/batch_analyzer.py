@@ -56,6 +56,15 @@ def main():
         action="store_true",
         help="Skip FCR and NCPR calculations.",
     )
+    parser.add_argument(
+        "--cahs-motif1",
+        action="store_true",
+        help=(
+            "Score the CAHS motif-1 helical segment: Pace & Scholtz helix "
+            "propensity (sum/mean), Eisenberg hydrophobic moment, helical "
+            "face occupancy, salt-bridge count, and Pro/Gly helix-breaker flags."
+        ),
+    )
     args = parser.parse_args()
 
     input_file = args.input_file
@@ -63,6 +72,7 @@ def main():
     use_processes = args.processes
     include_cider_kappa = args.cider_kappa
     include_extended_charge_metrics = not args.no_fcr_ncpr
+    include_cahs_motif1 = args.cahs_motif1
 
     default_workers = (os.cpu_count() or 4) if use_processes else min(os.cpu_count() or 4, 8)
     num_workers = max(1, args.workers or default_workers)
@@ -99,12 +109,15 @@ def main():
         metrics_summary.append("FCR/NCPR")
     if include_cider_kappa:
         metrics_summary.append("CIDER kappa")
+    if include_cahs_motif1:
+        metrics_summary.append("CAHS motif-1 helix/amphipathicity")
     print(f"[metrics] Enabled: {', '.join(metrics_summary)}")
     
     analysis_plan = screen_analysis_columns(
         df,
         include_extended_charge_metrics=include_extended_charge_metrics,
         include_cider_kappa=include_cider_kappa,
+        include_cahs_motif1=include_cahs_motif1,
     )
     rows_to_update_mask = analysis_plan["rows_to_update_mask"]
     rows_to_update_count = analysis_plan["rows_to_update_count"]
@@ -120,6 +133,7 @@ def main():
             df,
             include_extended_charge_metrics=include_extended_charge_metrics,
             include_cider_kappa=include_cider_kappa,
+            include_cahs_motif1=include_cahs_motif1,
         )
         results_df = out_df[analysis_plan["requested_columns"]].copy()
         elapsed = 0.0
@@ -221,6 +235,7 @@ def main():
         use_processes=use_processes,
         include_extended_charge_metrics=include_extended_charge_metrics,
         include_cider_kappa=include_cider_kappa,
+        include_cahs_motif1=include_cahs_motif1,
     )
     
     elapsed = time.time() - start_time
@@ -233,11 +248,13 @@ def main():
         results_df,
         include_extended_charge_metrics=include_extended_charge_metrics,
         include_cider_kappa=include_cider_kappa,
+        include_cahs_motif1=include_cahs_motif1,
     )
     out_df = ensure_analysis_columns(
         out_df,
         include_extended_charge_metrics=include_extended_charge_metrics,
         include_cider_kappa=include_cider_kappa,
+        include_cahs_motif1=include_cahs_motif1,
     )
     results_df = out_df[analysis_plan["requested_columns"]].copy()
     

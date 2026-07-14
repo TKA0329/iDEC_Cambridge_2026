@@ -61,7 +61,9 @@ USAGE (explicit list of proportions instead of a min/max/step sweep):
 All the filter_sequences.py threshold flags (--gravy-max, --instability-max,
 --helix-sheet-max, --turn-fraction-min, --charge-sum-min,
 --charge-ph7-exclude-min/--charge-ph7-exclude-max, --fcr-max,
---ncpr-min/--ncpr-max, --cider-kappa-max) are entered ONCE and reused
+--ncpr-min/--ncpr-max, --cider-kappa-max, --pace-scholtz-sum-max,
+--pace-scholtz-mean-max, --hydrophobic-moment-min/--hydrophobic-moment-max,
+--helical-face-occupancy-min) are entered ONCE and reused
 identically for every proportion in the sweep, so the resulting %-pass
 numbers are directly comparable across proportions. You can supply them on
 the command line, or -- if you omit them -- run_pipeline.py will prompt you
@@ -170,6 +172,9 @@ def metadata_to_filter_flags(meta):
         ("--charge-sum-min", "charge_sum_min"),
         ("--fcr-max", "fcr_max"),
         ("--cider-kappa-max", "cider_kappa_max"),
+        ("--pace-scholtz-sum-max", "pace_scholtz_sum_max"),
+        ("--pace-scholtz-mean-max", "pace_scholtz_mean_max"),
+        ("--helical-face-occupancy-min", "helical_face_occupancy_min"),
     ]
     for flag, key in single_value_map:
         val = _get(key)
@@ -183,6 +188,10 @@ def metadata_to_filter_flags(meta):
     ncpr_min, ncpr_max = _get("ncpr_min"), _get("ncpr_max")
     if ncpr_min is not None and ncpr_max is not None:
         flags += ["--ncpr-min", str(ncpr_min), "--ncpr-max", str(ncpr_max)]
+
+    hm_min, hm_max = _get("hydrophobic_moment_min"), _get("hydrophobic_moment_max")
+    if hm_min is not None and hm_max is not None:
+        flags += ["--hydrophobic-moment-min", str(hm_min), "--hydrophobic-moment-max", str(hm_max)]
 
     return flags
 
@@ -270,6 +279,11 @@ def build_parser():
     ba.add_argument("--processes", action="store_true")
     ba.add_argument("--cider-kappa", action="store_true")
     ba.add_argument("--no-fcr-ncpr", action="store_true")
+    ba.add_argument("--cahs-motif1", action="store_true",
+                     help="Passthrough to batch_analyzer.py --cahs-motif1 (score the CAHS "
+                          "motif-1 helical segment: Pace & Scholtz helix propensity, "
+                          "Eisenberg hydrophobic moment, helical face occupancy, salt-bridge "
+                          "count, Pro/Gly helix-breaker flags; default off)")
 
     # ── Final filter thresholds (entered once, applied to every proportion) ──
     filt = p.add_argument_group(
@@ -286,6 +300,11 @@ def build_parser():
     filt.add_argument("--ncpr-min", type=float, default=None)
     filt.add_argument("--ncpr-max", type=float, default=None)
     filt.add_argument("--cider-kappa-max", type=float, default=None)
+    filt.add_argument("--pace-scholtz-sum-max", type=float, default=None)
+    filt.add_argument("--pace-scholtz-mean-max", type=float, default=None)
+    filt.add_argument("--hydrophobic-moment-min", type=float, default=None)
+    filt.add_argument("--hydrophobic-moment-max", type=float, default=None)
+    filt.add_argument("--helical-face-occupancy-min", type=float, default=None)
     filt.add_argument(
         "--skip-filter-prompt", action="store_true",
         help="If no --*-max/--*-min threshold flags are supplied, skip the "
@@ -315,6 +334,8 @@ def main():
         raise SystemExit("--charge-ph7-exclude-min and --charge-ph7-exclude-max must be supplied together.")
     if (args.ncpr_min is None) != (args.ncpr_max is None):
         raise SystemExit("--ncpr-min and --ncpr-max must be supplied together.")
+    if (args.hydrophobic_moment_min is None) != (args.hydrophobic_moment_max is None):
+        raise SystemExit("--hydrophobic-moment-min and --hydrophobic-moment-max must be supplied together.")
 
     if not args.input_fasta.exists():
         raise SystemExit(f"Input FASTA not found: {args.input_fasta}")
@@ -335,6 +356,11 @@ def main():
         ("--ncpr-min", args.ncpr_min),
         ("--ncpr-max", args.ncpr_max),
         ("--cider-kappa-max", args.cider_kappa_max),
+        ("--pace-scholtz-sum-max", args.pace_scholtz_sum_max),
+        ("--pace-scholtz-mean-max", args.pace_scholtz_mean_max),
+        ("--hydrophobic-moment-min", args.hydrophobic_moment_min),
+        ("--hydrophobic-moment-max", args.hydrophobic_moment_max),
+        ("--helical-face-occupancy-min", args.helical_face_occupancy_min),
     ]:
         if val is not None:
             filter_cli_flags += [flag, str(val)]
@@ -442,6 +468,8 @@ def main():
                 ba_cmd.append("--cider-kappa")
             if args.no_fcr_ncpr:
                 ba_cmd.append("--no-fcr-ncpr")
+            if args.cahs_motif1:
+                ba_cmd.append("--cahs-motif1")
             run(ba_cmd, pdir / "04_batch_analyzer.log", "batch_analyzer.py")
             row["rows_analyzed"] = count_csv_rows(pdir / "analyzed.csv")
 

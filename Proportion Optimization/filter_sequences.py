@@ -22,7 +22,10 @@ Run (interactive):
 
 Run (non-interactive, e.g. from another script):
   python filter_sequences.py input.csv output_dir --non-interactive \\
-      --gravy-max 0.5 --instability-max 40 --ncpr-min -0.3 --ncpr-max 0.3
+      --gravy-max 0.5 --instability-max 40 --ncpr-min -0.3 --ncpr-max 0.3 \\
+      --pace-scholtz-sum-max 5 --pace-scholtz-mean-max 0.5 \\
+      --hydrophobic-moment-min 0.2 --hydrophobic-moment-max 0.6 \\
+      --helical-face-occupancy-min 0.7
 
 Optional positional:
   python filter_sequences.py input.csv output_dir
@@ -119,6 +122,18 @@ def apply_lower_bound_filter(df, remaining_mask, column, value, report_name):
     }
 
 
+def apply_lower_bound_inclusive_filter(df, remaining_mask, column, value, report_name):
+    next_mask = remaining_mask & (df[column].astype(float) >= value)
+    removed = int(remaining_mask.sum() - next_mask.sum())
+    return next_mask, {
+        report_name: {
+            "value": value,
+            "removed": removed,
+            "remaining_after": int(next_mask.sum()),
+        }
+    }
+
+
 def apply_range_filter(df, remaining_mask, column, low, high, report_name):
     next_mask = remaining_mask & (df[column].astype(float) >= low)
     next_mask &= df[column].astype(float) <= high
@@ -177,12 +192,22 @@ def parse_args():
     )
     parser.add_argument("--ncpr-max", type=float, default=None)
     parser.add_argument("--cider-kappa-max", type=float, default=None)
+    parser.add_argument("--pace-scholtz-sum-max", type=float, default=None)
+    parser.add_argument("--pace-scholtz-mean-max", type=float, default=None)
+    parser.add_argument(
+        "--hydrophobic-moment-min", type=float, default=None,
+        help="Keep rows with hydrophobic_moment in [min, max]. Supply together with --hydrophobic-moment-max.",
+    )
+    parser.add_argument("--hydrophobic-moment-max", type=float, default=None)
+    parser.add_argument("--helical-face-occupancy-min", type=float, default=None)
     args = parser.parse_args()
 
     if (args.charge_ph7_exclude_min is None) != (args.charge_ph7_exclude_max is None):
         parser.error("--charge-ph7-exclude-min and --charge-ph7-exclude-max must be supplied together.")
     if (args.ncpr_min is None) != (args.ncpr_max is None):
         parser.error("--ncpr-min and --ncpr-max must be supplied together.")
+    if (args.hydrophobic_moment_min is None) != (args.hydrophobic_moment_max is None):
+        parser.error("--hydrophobic-moment-min and --hydrophobic-moment-max must be supplied together.")
 
     return args
 
@@ -273,6 +298,24 @@ def main():
         available_filter_descriptions.append("cider_kappa: keep rows with CIDER kappa <= value")
     else:
         skipped_filters.append("cider_kappa")
+    if "pace_scholtz_sum" in df.columns:
+        available_filter_descriptions.append("pace_scholtz_sum: keep rows with pace_scholtz_sum <= value")
+    else:
+        skipped_filters.append("pace_scholtz_sum")
+    if "pace_scholtz_mean" in df.columns:
+        available_filter_descriptions.append("pace_scholtz_mean: keep rows with pace_scholtz_mean <= value")
+    else:
+        skipped_filters.append("pace_scholtz_mean")
+    if "hydrophobic_moment" in df.columns:
+        available_filter_descriptions.append("hydrophobic_moment: keep rows with hydrophobic_moment within range")
+    else:
+        skipped_filters.append("hydrophobic_moment")
+    if "helical_face_occupancy" in df.columns:
+        available_filter_descriptions.append(
+            "helical_face_occupancy: keep rows with helical_face_occupancy >= value"
+        )
+    else:
+        skipped_filters.append("helical_face_occupancy")
 
     if args.non_interactive:
         print("Non-interactive mode: using thresholds supplied on the command line "
@@ -292,6 +335,17 @@ def main():
         else:
             ncpr_min, ncpr_max = None, None
         cider_kappa_max = args.cider_kappa_max if "cider_kappa" in df.columns else None
+        pace_scholtz_sum_max = args.pace_scholtz_sum_max if "pace_scholtz_sum" in df.columns else None
+        pace_scholtz_mean_max = args.pace_scholtz_mean_max if "pace_scholtz_mean" in df.columns else None
+        if "hydrophobic_moment" in df.columns:
+            hydrophobic_moment_min, hydrophobic_moment_max = (
+                args.hydrophobic_moment_min, args.hydrophobic_moment_max
+            )
+        else:
+            hydrophobic_moment_min, hydrophobic_moment_max = None, None
+        helical_face_occupancy_min = (
+            args.helical_face_occupancy_min if "helical_face_occupancy" in df.columns else None
+        )
     else:
         print("Enter filter values. Press Enter to skip any available filter.")
         for description in available_filter_descriptions:
@@ -333,6 +387,27 @@ def main():
             ncpr_min, ncpr_max = None, None
         cider_kappa_max = (
             prompt_float("cider_kappa <=", allow_empty=True) if "cider_kappa" in df.columns else None
+        )
+        pace_scholtz_sum_max = (
+            prompt_float("pace_scholtz_sum <=", allow_empty=True)
+            if "pace_scholtz_sum" in df.columns
+            else None
+        )
+        pace_scholtz_mean_max = (
+            prompt_float("pace_scholtz_mean <=", allow_empty=True)
+            if "pace_scholtz_mean" in df.columns
+            else None
+        )
+        if "hydrophobic_moment" in df.columns:
+            hydrophobic_moment_min, hydrophobic_moment_max = prompt_range(
+                "hydrophobic_moment range (min-max)", allow_empty=True
+            )
+        else:
+            hydrophobic_moment_min, hydrophobic_moment_max = None, None
+        helical_face_occupancy_min = (
+            prompt_float("helical_face_occupancy >=", allow_empty=True)
+            if "helical_face_occupancy" in df.columns
+            else None
         )
 
     remaining_mask = pd.Series(True, index=df.index)
@@ -388,6 +463,31 @@ def main():
         )
         filter_report.update(report)
 
+    if pace_scholtz_sum_max is not None:
+        remaining_mask, report = apply_upper_bound_filter(
+            df, remaining_mask, "pace_scholtz_sum", pace_scholtz_sum_max, "pace_scholtz_sum"
+        )
+        filter_report.update(report)
+
+    if pace_scholtz_mean_max is not None:
+        remaining_mask, report = apply_upper_bound_filter(
+            df, remaining_mask, "pace_scholtz_mean", pace_scholtz_mean_max, "pace_scholtz_mean"
+        )
+        filter_report.update(report)
+
+    if hydrophobic_moment_min is not None and hydrophobic_moment_max is not None:
+        remaining_mask, report = apply_range_filter(
+            df, remaining_mask, "hydrophobic_moment",
+            hydrophobic_moment_min, hydrophobic_moment_max, "hydrophobic_moment"
+        )
+        filter_report.update(report)
+
+    if helical_face_occupancy_min is not None:
+        remaining_mask, report = apply_lower_bound_inclusive_filter(
+            df, remaining_mask, "helical_face_occupancy", helical_face_occupancy_min, "helical_face_occupancy"
+        )
+        filter_report.update(report)
+
     filtered_df = df.loc[remaining_mask].copy()
     rows_removed = len(df) - len(filtered_df)
     print(f"\nFiltered rows: {len(filtered_df):,} / {len(df):,}")
@@ -421,6 +521,11 @@ def main():
         "ncpr_min": ncpr_min,
         "ncpr_max": ncpr_max,
         "cider_kappa_max": cider_kappa_max,
+        "pace_scholtz_sum_max": pace_scholtz_sum_max,
+        "pace_scholtz_mean_max": pace_scholtz_mean_max,
+        "hydrophobic_moment_min": hydrophobic_moment_min,
+        "hydrophobic_moment_max": hydrophobic_moment_max,
+        "helical_face_occupancy_min": helical_face_occupancy_min,
     }
     for key, report in filter_report.items():
         metadata[f"removed_by_{key}"] = report["removed"]
