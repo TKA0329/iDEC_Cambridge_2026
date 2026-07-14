@@ -20,13 +20,22 @@ import csv
 import os
 import sys
 import time
+import argparse
 
 # ================================================================
 #  CONFIGURATION
 # ================================================================
 
-INPUT_FILE  = 'generated_sequences.csv'   # change or pass as argument
-OUTPUT_FILE = 'sequences_only.csv'        # change or pass as argument
+parser = argparse.ArgumentParser(description='Extract sequences from a CSV file.')
+parser.add_argument('input_file', nargs='?', default='generated_sequences.csv',
+                     help='Path to input CSV file (default: generated_sequences.csv)')
+parser.add_argument('output_file', nargs='?', default='sequences_only.csv',
+                     help='Path to output CSV file (default: sequences_only.csv)')
+args = parser.parse_args()
+
+INPUT_FILE = args.input_file
+OUTPUT_FILE = args.output_file
+
 
 # ================================================================
 #  PROGRESS BAR
@@ -49,12 +58,22 @@ def _progress(current: int, total: int, t0: float, bar_width: int = 40) -> None:
 
 
 def _count_rows(filepath: str) -> int:
-    """Count data rows (excluding header) efficiently."""
+    """Count data rows (excluding header and '#' comment lines) efficiently."""
     print("  Counting rows …", end='', flush=True)
     with open(filepath, 'r', newline='') as f:
-        count = sum(1 for _ in f) - 1   # subtract header
+        count = sum(1 for line in f if not line.lstrip().startswith('#'))
+        count -= 1  # subtract header
     print(f" {count:,}")
     return count
+
+
+def _filtered_lines(filepath):
+    """Yield lines from filepath, skipping any that start with '#' (ignoring
+    leading whitespace)."""
+    with open(filepath, 'r', newline='') as f:
+        for line in f:
+            if not line.lstrip().startswith('#'):
+                yield line
 
 
 # ================================================================
@@ -79,10 +98,9 @@ def extract(input_file: str, output_file: str) -> None:
     written = 0
     t0      = time.time()
 
-    with open(input_file,  'r', newline='') as fin, \
-         open(output_file, 'w', newline='') as fout:
+    with open(output_file, 'w', newline='') as fout:
 
-        reader = csv.DictReader(fin)
+        reader = csv.DictReader(_filtered_lines(input_file))
 
         if 'sequence' not in (reader.fieldnames or []):
             print(f"  ✗  No 'sequence' column found in {input_file}.")
@@ -115,7 +133,4 @@ def extract(input_file: str, output_file: str) -> None:
 
 
 if __name__ == '__main__':
-    args = sys.argv[1:]
-    inp  = args[0] if len(args) > 0 else INPUT_FILE
-    out  = args[1] if len(args) > 1 else OUTPUT_FILE
-    extract(inp, out)
+    extract(INPUT_FILE, OUTPUT_FILE)

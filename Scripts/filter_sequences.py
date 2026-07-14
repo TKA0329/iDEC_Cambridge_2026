@@ -116,6 +116,20 @@ def apply_range_filter(df, remaining_mask, column, low, high, report_name):
     }
 
 
+def apply_exclude_range_filter(df, remaining_mask, column, low, high, report_name):
+    """Keep rows OUTSIDE the given [low, high] range (i.e. remove rows within it)."""
+    values = df[column].astype(float)
+    next_mask = remaining_mask & ((values < low) | (values > high))
+    removed = int(remaining_mask.sum() - next_mask.sum())
+    return next_mask, {
+        report_name: {
+            "value": f"exclude {low}-{high}",
+            "removed": removed,
+            "remaining_after": int(next_mask.sum()),
+        }
+    }
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python filter_sequences.py <input.csv> [output_dir]")
@@ -193,7 +207,7 @@ def main():
     else:
         skipped_filters.append("charge_sum")
     if "charge_at_pH7" in df.columns:
-        available_filter_descriptions.append("charge_at_pH7: keep rows within the specified range")
+        available_filter_descriptions.append("charge_at_pH7: remove rows within the specified range")
     else:
         skipped_filters.append("charge_at_pH7")
     if "fcr" in df.columns:
@@ -238,7 +252,7 @@ def main():
     )
     if "charge_at_pH7" in df.columns:
         charge_pH7_min, charge_pH7_max = prompt_range(
-            "charge_at_pH7 range (min-max)", allow_empty=True
+            "remove charge_at_pH7 range (min-max)", allow_empty=True
         )
     else:
         charge_pH7_min, charge_pH7_max = None, None
@@ -283,7 +297,7 @@ def main():
         filter_report.update(report)
 
     if charge_pH7_min is not None and charge_pH7_max is not None:
-        remaining_mask, report = apply_range_filter(
+        remaining_mask, report = apply_exclude_range_filter(
             df, remaining_mask, "charge_at_pH7", charge_pH7_min, charge_pH7_max, "charge_at_pH7"
         )
         filter_report.update(report)
