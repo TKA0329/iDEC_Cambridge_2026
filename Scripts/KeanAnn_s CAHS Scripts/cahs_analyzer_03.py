@@ -51,7 +51,7 @@ PS_MEAN_MIN = None       # OFF by default. Set e.g. 0.10 to enforce an "over-rig
                           # (reject mutants that are FAR more helix-favorable than WT).
 
 MOMENT_MIN = 0.263       # exclude if hydrophobic_moment < this
-MOMENT_MAX = None        # OFF by default. Set e.g. 0.40 (~1.5x WT) to cap extreme amphipathicity.
+MOMENT_MAX = 0.526        # OFF by default. Set e.g. 0.40 (~1.5x WT) to cap extreme amphipathicity.
 
 FACE_OCCUPANCY_MIN = 0.6  # exclude if helical_face_occupancy < this
 
