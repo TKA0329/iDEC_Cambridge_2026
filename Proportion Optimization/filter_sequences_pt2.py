@@ -109,6 +109,33 @@ AMBIGUOUS_CHARS = {"X", "x"}
 EPSILON = 1e-9
 
 
+def parse_position_spec(spec):
+    """Parse a comma-separated list of 1-indexed positions and/or ranges
+    (e.g. "8-11,16,18-21") into a set of ints. Matches the region-label
+    format hotspot_detection.py prints/writes (start-end, or a bare
+    number for a single-position region)."""
+    positions = set()
+    for chunk in spec.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "-" in chunk:
+            start_s, _, end_s = chunk.partition("-")
+            try:
+                start, end = int(start_s), int(end_s)
+            except ValueError:
+                raise ValueError(f"Invalid range in --hotspot-positions: '{chunk}'")
+            if end < start:
+                raise ValueError(f"Invalid range in --hotspot-positions: '{chunk}' (end < start)")
+            positions.update(range(start, end + 1))
+        else:
+            try:
+                positions.add(int(chunk))
+            except ValueError:
+                raise ValueError(f"Invalid position in --hotspot-positions: '{chunk}'")
+    return positions
+
+
 def read_sequences(fasta_path):
     """Read sequences from a FASTA file.
 
@@ -240,7 +267,7 @@ def generate_random_base(position_info, rng):
     return "".join(seq_chars)
 
 
-def build_variant_rows(position_info, base_sequence, base_label):
+def build_variant_rows(position_info, base_sequence, base_label, allowed_positions=None):
     """
     Build the (label, sequence) rows: the base sequence itself, plus one
     single-position-swapped variant for every allowed amino acid (top +
@@ -251,12 +278,23 @@ def build_variant_rows(position_info, base_sequence, base_label):
     top-scoring consensus or a randomly generated sequence: only
     genuinely different swaps are emitted, so no redundant duplicate of
     the base sequence is ever produced.
+
+    allowed_positions: optional set of 1-indexed positions (e.g. from
+        hotspot detection). If given, variant rows are only emitted for
+        positions in this set -- positions outside it are skipped
+        entirely, even if they have extra amino acids available. The
+        base sequence itself is unaffected (still built from ALL
+        positions); this only restricts which single-position mutants
+        get written out.
     """
     rows = [(base_label, base_sequence)]
     letters = string.ascii_lowercase
 
     for pos, info in enumerate(position_info):
         if info["top"] is None:
+            continue
+        pos_1indexed = pos + 1
+        if allowed_positions is not None and pos_1indexed not in allowed_positions:
             continue
         allowed = [info["top"]] + info["extra"]
         base_res = base_sequence[pos]
@@ -266,7 +304,7 @@ def build_variant_rows(position_info, base_sequence, base_label):
             if aa == base_res:
                 continue  # would be identical to the base sequence
             suffix = letters[idx] if idx < len(letters) else f"_{idx}"
-            label = f"pos {pos + 1}{suffix}"
+            label = f"pos {pos_1indexed}{suffix}"
             variant_seq = base_sequence[:pos] + aa + base_sequence[pos + 1:]
             rows.append((label, variant_seq))
             idx += 1
@@ -348,13 +386,43 @@ def main():
             "Default: 0.5 (50%%)."
         ),
     )
+    parser.add_argument(
+        "--hotspot-positions",
+        type=str,
+        default=None,
+        help=(
+            "Optional: comma-separated list of 1-indexed positions and/or "
+            "ranges (e.g. '8-11,16-21') to restrict variant output to. When "
+            "given, the base/consensus sequence is still built from ALL "
+            "positions as normal, but variant rows (>2, >3, ...) are ONLY "
+            "emitted for positions inside this set -- positions outside it "
+            "are left at the base residue in every output sequence. "
+            "Typically populated from hotspot_detection.py's flagged "
+            "regions rather than typed by hand."
+        ),
+    )
     args = parser.parse_args()
 
     if not (0.0 <= args.proportion <= 1.0):
         parser.error("--proportion must be between 0 and 1")
 
+    allowed_positions = None
+    if args.hotspot_positions:
+        try:
+            allowed_positions = parse_position_spec(args.hotspot_positions)
+        except ValueError as exc:
+            parser.error(str(exc))
+
     seqs = read_sequences(args.input_fasta)
     seq_len = validate_equal_length(seqs)
+
+    if allowed_positions is not None:
+        out_of_range = {p for p in allowed_positions if not (1 <= p <= seq_len)}
+        if out_of_range:
+            parser.error(
+                f"--hotspot-positions contains position(s) outside the "
+                f"sequence length (1-{seq_len}): {sorted(out_of_range)}"
+            )
 
     position_info, report_rows = summarize_positions(seqs, seq_len, args.proportion)
 
@@ -368,7 +436,7 @@ def main():
         base_label = "original"
         mode_desc = "top-scoring consensus (original/wild-type residue per position)"
 
-    rows = build_variant_rows(position_info, base_sequence, base_label)
+    rows = build_variant_rows(position_info, base_sequence, base_label, allowed_positions=allowed_positions)
 
     write_variant_fasta(args.output_fasta, rows)
     if args.report:

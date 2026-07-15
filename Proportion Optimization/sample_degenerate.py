@@ -19,9 +19,19 @@ Options:
     --num           Number of sequences to sample (required)
     --output        Output CSV path (default: sampled_sequences.csv)
     --seed          Random seed for reproducibility (default: 42)
-    --unique        Ensure all sampled DNA sequences are unique (default: on)
-    --no-unique     Allow duplicate sampled DNA sequences
+    --unique        Sample distinct DNA sequences, no DNA-level repeats (default: on)
+    --no-unique     Allow the same DNA sequence to be drawn more than once
                      (--unique fails/warns if the degenerate space is smaller than --num)
+
+PROTEIN-LEVEL DEDUPLICATION (always on, not a flag):
+    Two different DNA sequences can translate to the same protein (synonymous
+    codons), so DNA-level uniqueness alone does not guarantee unique protein
+    output. This script always keeps sampling additional DNA sequences until
+    it has --num sequences that are unique AT THE PROTEIN LEVEL (or until the
+    reachable protein diversity is exhausted, in which case it warns and
+    writes however many unique proteins it actually found). There is no
+    --no-protein-dedup escape hatch: the output CSV's "sequence" column is
+    always duplicate-free.
 """
 
 import argparse
@@ -184,65 +194,117 @@ def main():
     sys.stderr.flush()
 
     rows = []
+    seen_proteins = set()
+
+    # Protein-level dedup is ALWAYS on (not a flag): --unique/--no-unique below
+    # only control whether the underlying DNA draws are distinct from one
+    # another. Even with --unique, two different DNA indices can translate to
+    # the same protein (synonymous codons), so we keep drawing DNA until we
+    # have --num sequences whose PROTEIN is unique, discarding any draw whose
+    # protein has already been seen.
+    #
+    # Stall breaker: a heavily degenerate motif (e.g. lots of NNK codons) can
+    # have a DNA space many orders of magnitude larger than its reachable
+    # protein space. Without a circuit-breaker, "keep sampling until unique"
+    # would spin through an astronomically large but repetitive DNA space
+    # forever, chasing a protein target it can never reach. If this many
+    # consecutive draws in a row fail to produce a new unique protein, we
+    # conclude the reachable protein diversity is exhausted and stop early.
+    STALL_LIMIT = max(20_000, args.num * 20)
+    consecutive_no_new = 0
+    attempts = 0
+    report_interval = max(1, args.num // 20)
+    start_time = time.time()
+
+    def report_progress():
+        elapsed = time.time() - start_time
+        print(
+            f"[progress] {len(rows):,}/{args.num:,} unique proteins found "
+            f"({len(rows) / args.num:.1%}) | {attempts:,} DNA draws attempted | {elapsed:.1f}s",
+            file=sys.stderr,
+        )
+        sys.stderr.flush()
 
     if args.unique:
-        k = min(args.num, total_space)
         if args.num > total_space:
             print(
-                f"Warning: requested {args.num:,} unique sequences but the degenerate "
-                f"sequence only encodes {total_space:,}. Generating all {total_space:,}.",
+                f"Warning: requested {args.num:,} unique DNA draws but the degenerate "
+                f"sequence only encodes {total_space:,}. At most {total_space:,} distinct "
+                f"DNA sequences (and therefore at most that many unique proteins) can be produced.",
                 file=sys.stderr,
             )
-
-        print(f"[run] Sampling {k:,} unique indices from a space of {total_space:,}...", file=sys.stderr)
+        dna_target = min(args.num, total_space)
+        print(f"[run] Drawing distinct DNA sequences (up to {dna_target:,}) from a space of "
+              f"{total_space:,}, keeping only new unique proteins...", file=sys.stderr)
         sys.stderr.flush()
-        t0 = time.time()
-        # Sample distinct integers, not distinct strings: this de-duplicates
-        # via a cheap integer set, so it stays fast even when k is close to
-        # total_space (no coupon-collector blowup on long DNA strings).
-        #
+
         # NOTE: we deliberately do NOT use random.sample(range(total_space), k)
         # here. random.sample() calls len() on its population, and range.__len__
         # raises OverflowError once total_space exceeds a C ssize_t (~9.2e18) --
         # which real degenerate sequences of even moderate length blow past
         # instantly (e.g. 156 nt of mixed N/K codons here works out to ~3.3e25).
-        # random.randrange() has no such limit: it handles arbitrarily large
-        # Python ints directly via getrandbits(), so we build the distinct set
-        # by hand instead.
-        selected = set()
-        while len(selected) < k:
-            selected.add(random.randrange(total_space))
-        indices = list(selected)
-        print(f"[run] Index sampling done in {time.time() - t0:.2f}s. Decoding + translating...", file=sys.stderr)
-        sys.stderr.flush()
-
-        report_interval = max(1, k // 20)
-        start_time = time.time()
-        for i, idx in enumerate(indices, start=1):
+        # random.randrange() has no such limit, so we track drawn indices by hand.
+        selected_indices = set()
+        while len(rows) < args.num and len(selected_indices) < total_space:
+            idx = random.randrange(total_space)
+            if idx in selected_indices:
+                continue
+            selected_indices.add(idx)
+            attempts += 1
             dna = decode_index(idx, degenerate_seq)
             protein = translate(dna)
-            rows.append((i, dna, protein))
-            if i % report_interval == 0 or i == k:
-                elapsed = time.time() - start_time
-                print(f"[progress] {i:,}/{k:,} decoded ({i / k:.1%}) | {elapsed:.1f}s", file=sys.stderr)
-                sys.stderr.flush()
-    else:
-        report_interval = max(1, args.num // 20)
-        start_time = time.time()
-        for i in range(1, args.num + 1):
-            dna = sample_dna(degenerate_seq)
-            protein = translate(dna)
-            rows.append((i, dna, protein))
-            if i % report_interval == 0 or i == args.num:
-                elapsed = time.time() - start_time
-                print(f"[progress] {i:,}/{args.num:,} sampled ({i / args.num:.1%}) | {elapsed:.1f}s", file=sys.stderr)
-                sys.stderr.flush()
+            if protein in seen_proteins:
+                consecutive_no_new += 1
+                if consecutive_no_new >= STALL_LIMIT:
+                    print(
+                        f"Warning: {STALL_LIMIT:,} consecutive DNA draws in a row produced no new "
+                        f"unique protein. Reachable protein diversity appears exhausted; stopping early "
+                        f"with {len(rows):,}/{args.num:,} unique proteins found.",
+                        file=sys.stderr,
+                    )
+                    break
+                continue
+            consecutive_no_new = 0
+            seen_proteins.add(protein)
+            rows.append((len(rows) + 1, dna, protein))
+            if len(rows) % report_interval == 0 or len(rows) == args.num:
+                report_progress()
 
-    if args.unique and len(rows) < args.num:
+        if len(rows) < args.num and len(selected_indices) >= total_space:
+            print(
+                f"Warning: the entire degenerate DNA space ({total_space:,} sequences) was drawn "
+                f"and only {len(rows):,} unique proteins were found (requested {args.num:,}).",
+                file=sys.stderr,
+            )
+    else:
+        print(f"[run] Sampling DNA (with replacement, DNA-level repeats allowed) until "
+              f"{args.num:,} unique proteins are found...", file=sys.stderr)
+        sys.stderr.flush()
+        while len(rows) < args.num:
+            dna = sample_dna(degenerate_seq)
+            attempts += 1
+            protein = translate(dna)
+            if protein in seen_proteins:
+                consecutive_no_new += 1
+                if consecutive_no_new >= STALL_LIMIT:
+                    print(
+                        f"Warning: {STALL_LIMIT:,} consecutive draws in a row produced no new "
+                        f"unique protein. Reachable protein diversity appears exhausted; stopping early "
+                        f"with {len(rows):,}/{args.num:,} unique proteins found.",
+                        file=sys.stderr,
+                    )
+                    break
+                continue
+            consecutive_no_new = 0
+            seen_proteins.add(protein)
+            rows.append((len(rows) + 1, dna, protein))
+            if len(rows) % report_interval == 0 or len(rows) == args.num:
+                report_progress()
+
+    if len(rows) < args.num:
         print(
-            f"Warning: could only generate {len(rows)} unique sequences "
-            f"(requested {args.num}). The degenerate sequence's total possible "
-            f"space may be smaller than requested.",
+            f"Warning: could only generate {len(rows):,} unique-protein sequences "
+            f"(requested {args.num:,}) after {attempts:,} DNA draws.",
             file=sys.stderr,
         )
 

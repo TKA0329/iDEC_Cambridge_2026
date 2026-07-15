@@ -77,12 +77,28 @@ prompt on).
 
 import argparse
 import csv
+import importlib.util
 import re
 import subprocess
 import sys
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def load_hotspot_module():
+    """Import hotspot_detection.py from the same directory as this script,
+    if present. Kept as a separate optional file (not vendored in) so
+    --hotspot-detection is an opt-in drop-in dependency rather than a hard
+    requirement of run_pipeline.py. Returns None (with a warning printed by
+    the caller) if the file isn't found."""
+    path = SCRIPT_DIR / "hotspot_detection.py"
+    if not path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("hotspot_detection", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def fmt_prop(p):
@@ -138,6 +154,24 @@ def run_interactive(cmd, description=""):
     proc = subprocess.run(cmd)
     if proc.returncode != 0:
         raise RuntimeError(f"{description} failed (exit {proc.returncode}).")
+
+
+def prompt_for_hotspot_k(ks, default_k):
+    """Ask the user which k value (from the just-printed sweep) to lock in
+    for the rest of the proportion sweep. Blank input keeps --hotspot-k's
+    current default rather than forcing a choice."""
+    while True:
+        raw = input(
+            f"Choose a --hotspot-k value to use for this and all remaining "
+            f"proportions [default {default_k}]: "
+        ).strip()
+        if not raw:
+            return default_k
+        try:
+            return float(raw)
+        except ValueError:
+            print(f"'{raw}' isn't a number -- enter one of {ks}, any other numeric "
+                  f"value, or leave blank for the default ({default_k}).")
 
 
 def stdin_is_interactive():
@@ -314,6 +348,51 @@ def build_parser():
              "terminal is available to prompt on.",
     )
 
+    # ── Hotspot detection (optional; restricts variant positions) ──
+    hs = p.add_argument_group(
+        "hotspot detection (optional; runs ONCE on the input FASTA before the "
+        "proportion sweep, and restricts filter_sequences_pt2.py's variant output "
+        "to the flagged hotspot region(s) at EVERY proportion)"
+    )
+    hs.add_argument(
+        "--hotspot-detection", dest="hotspot_detection", action="store_true", default=True,
+        help="Run positional-variability hotspot detection once on the input FASTA "
+             "(requires hotspot_detection.py in the same directory as this script), "
+             "before the proportion sweep starts. The flagged hotspot region(s) are "
+             "then passed as --hotspot-positions to filter_sequences_pt2.py for "
+             "every proportion, so its variant rows (>2, >3, ...) are only emitted "
+             "for positions inside those regions. Also adds n_hotspot_regions/"
+             "hotspot_regions columns to summary.csv (same value at every "
+             "proportion, since detection runs once). On by default; use "
+             "--no-hotspot-detection to disable.",
+    )
+    hs.add_argument(
+        "--no-hotspot-detection", dest="hotspot_detection", action="store_false",
+        help="Disable hotspot detection: every position is treated as a candidate "
+             "variant position (the old pre-hotspot behavior), and no "
+             "hotspot_table.tsv/hotspot_regions.tsv are written.",
+    )
+    hs.add_argument("--hotspot-metric", choices=["noise", "entropy"], default="noise",
+                     help="Per-position score: noise = 100 - top_aa%%, or Shannon entropy "
+                          "over the full residue distribution (default: noise)")
+    hs.add_argument("--hotspot-detector", choices=["mad", "plain"], default="mad",
+                     help="mad = robust median/MAD z-score thresholding (default); "
+                          "plain = naive mean/stdev z-score, for comparison")
+    hs.add_argument("--hotspot-k", type=float, default=0.5,
+                     help="Z-score threshold for flagging a position (default: 0.5)")
+    hs.add_argument("--hotspot-max-gap", type=int, default=1,
+                     help="Max position gap allowed when merging adjacent flagged "
+                          "positions into one region (default: 1)")
+    hs.add_argument(
+        "--hotspot-k-sweep", type=str, default=None,
+        help="Comma-separated k values (e.g. 0.5,1.0,1.5,2.0,2.5,3.0) to sweep on "
+             "the input FASTA. Prints region/flagged-position counts at each k, "
+             "then prompts you to choose one value. Whatever you choose is locked "
+             "in and used (as --hotspot-k) for the single up-front detection run "
+             "whose regions then apply to every proportion. Requires "
+             "--hotspot-detection and a terminal to prompt on; if no terminal is "
+             "available, falls back to --hotspot-k with a warning.")
+
     # ── Misc ─────────────────────────────────────────────────────
     p.add_argument("--seed", type=int, default=42,
                     help="Random seed, reused for filter_sequences_pt2 (--random-base only), "
@@ -398,6 +477,92 @@ def main():
 
     print(f"Proportions to sweep ({len(proportions)}): {proportions}\n")
 
+    # Hotspot detection runs ONCE, up front, on the raw input FASTA -- not
+    # per-proportion -- since the set of aligned positions/residues doesn't
+    # change with --proportion (only the allowed-set thresholding does).
+    # Whatever region(s) it flags are then reused, as a fixed
+    # --hotspot-positions value, for every proportion in the sweep.
+    hotspot_regions_label = ""
+    n_hotspot_regions = ""
+    hotspot_positions_arg = None  # e.g. "8-11,16-21", passed straight through to pt2
+
+    if args.hotspot_detection:
+        hotspot_mod = load_hotspot_module()
+        if hotspot_mod is None:
+            print("Warning: --hotspot-detection was set but hotspot_detection.py "
+                  "was not found next to run_pipeline.py -- skipping hotspot "
+                  "analysis for this run.\n")
+        else:
+            print(f"Hotspot detection enabled (running once on input FASTA): "
+                  f"metric={args.hotspot_metric} detector={args.hotspot_detector} "
+                  f"k={args.hotspot_k} max_gap={args.hotspot_max_gap}")
+
+            records = hotspot_mod.parse_fasta(args.input_fasta)
+            try:
+                hs_table = hotspot_mod.build_table(records)
+            except ValueError as exc:
+                raise SystemExit(f"Hotspot detection failed: {exc}")
+
+            table_path = args.output_dir / "hotspot_table.tsv"
+            sweep_path = args.output_dir / "hotspot_k_sweep.tsv"
+            regions_path = args.output_dir / "hotspot_regions.tsv"
+
+            chosen_k = args.hotspot_k
+            if args.hotspot_k_sweep:
+                ks = [float(x) for x in args.hotspot_k_sweep.split(",")]
+                if stdin_is_interactive():
+                    hotspot_mod.sweep_k(
+                        hs_table, args.hotspot_metric, args.hotspot_detector, ks,
+                        max_gap=args.hotspot_max_gap, save_csv=sweep_path,
+                    )
+                    chosen_k = prompt_for_hotspot_k(ks, args.hotspot_k)
+                    print(f"  -> using k={chosen_k} for the hotspot run applied to "
+                          f"every proportion\n")
+                else:
+                    print("Warning: --hotspot-k-sweep requires a terminal to prompt "
+                          f"on; falling back to --hotspot-k={args.hotspot_k}.\n")
+
+            hs_result = hotspot_mod.run(
+                hs_table, args.hotspot_metric, args.hotspot_detector,
+                chosen_k, max_gap=args.hotspot_max_gap,
+            )
+
+            # Save the annotated per-position table (score/z/hotspot columns).
+            hotspot_mod.write_table(
+                hotspot_mod.annotate_table(hs_table, hs_result), table_path
+            )
+
+            region_strs = [f"{s}-{e}" if s != e else f"{s}" for s, e in hs_result["regions"]]
+            n_hotspot_regions = len(hs_result["regions"])
+            hotspot_regions_label = ";".join(region_strs)
+            hotspot_positions_arg = ",".join(region_strs)  # matches parse_position_spec's format
+
+            # Save the final chosen-k regions table too (independent of
+            # whether --hotspot-k-sweep was used -- sweep_k's --save-regions
+            # only records the sweep itself, not the k that got locked in).
+            with open(regions_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f, delimiter="\t")
+                writer.writerow(["region_start", "region_end", "flagged_positions"])
+                for start, end in hs_result["regions"]:
+                    idxs = [i for i, p in enumerate(hs_result["positions"]) if start <= p <= end]
+                    flagged_positions = [hs_result["positions"][i] for i in idxs if hs_result["flagged"][i]]
+                    writer.writerow([start, end, ",".join(map(str, flagged_positions))])
+
+            if region_strs:
+                print(f"  {n_hotspot_regions} hotspot region(s) at k={chosen_k}: "
+                      f"{hotspot_regions_label}")
+            else:
+                print(f"  No hotspot regions flagged at k={chosen_k} -- every "
+                      f"proportion's pt2 step will emit NO variant rows at all "
+                      f"(only the base/consensus sequence), since --hotspot-positions "
+                      f"will be an empty set.")
+            print(f"  Table saved to:   {table_path}")
+            if args.hotspot_k_sweep and stdin_is_interactive():
+                print(f"  K-sweep saved to: {sweep_path}")
+            print(f"  Regions saved to: {regions_path}")
+            print("  These flagged region(s) will be applied (as --hotspot-positions) "
+                  "to filter_sequences_pt2.py for every proportion in the sweep.\n")
+
     summary_rows = []
 
     for p in proportions:
@@ -418,7 +583,15 @@ def main():
             ]
             if args.random_base:
                 pt2_cmd += ["--random-base", "--seed", str(args.seed)]
+            if hotspot_positions_arg is not None:
+                pt2_cmd += ["--hotspot-positions", hotspot_positions_arg]
             run(pt2_cmd, pdir / "01_pt2.log", "filter_sequences_pt2.py")
+
+            # Hotspot regions were computed ONCE, up front, on the raw input
+            # FASTA (see above) -- the same regions apply to every proportion,
+            # so just record that fixed result here rather than recomputing.
+            row["n_hotspot_regions"] = n_hotspot_regions
+            row["hotspot_regions"] = hotspot_regions_label
 
             # 2. reverse_translation_V5_StopSafe.py -------------------------
             print("  [2/5] reverse_translation_V5_StopSafe.py (--mode direct)")
@@ -551,6 +724,7 @@ def main():
         "proportion", "status", "degenerate_sequence", "encoded_space",
         "samples_generated", "rows_analyzed", "rows_before_filter",
         "rows_after_filter", "pct_pass", "est_successful_sequences",
+        "n_hotspot_regions", "hotspot_regions",
     ]
     summary_path = args.output_dir / "summary.csv"
     with open(summary_path, "w", newline="", encoding="utf-8") as f:
@@ -562,18 +736,30 @@ def main():
     print("=" * 60)
     print(f"Summary written to: {summary_path}")
 
-    ok_rows = [r for r in summary_rows if r.get("status") == "ok" and r.get("pct_pass") not in (None, "")]
+    ok_rows = [
+        r for r in summary_rows
+        if r.get("status") == "ok" and r.get("est_successful_sequences") not in (None, "")
+    ]
     if ok_rows:
-        best = max(ok_rows, key=lambda r: float(r["pct_pass"]))
+        # Optimize for est_successful_sequences, per the module docstring:
+        # pct_pass alone rewards tiny, over-constrained motifs that barely
+        # explore any sequence space, while est_successful_sequences
+        # extrapolates the sampled pass rate across the full degenerate
+        # motif's combinatorial space -- the number that actually answers
+        # "how many usable designs does this proportion give me".
+        best = max(ok_rows, key=lambda r: float(r["est_successful_sequences"]))
         print(f"Best proportion so far: {best['proportion']}  "
-              f"({best['pct_pass']}% pass, {best['rows_after_filter']}/{best['rows_before_filter']} rows)")
+              f"(~{float(best['est_successful_sequences']):,.0f} est. successful sequences, "
+              f"{best['pct_pass']}% pass, {best['rows_after_filter']}/{best['rows_before_filter']} rows)")
         print("(This is the best point directly sampled by the sweep -- it is not "
               "a curve fit / interpolated optimum. Narrow --prop-min/--prop-max/"
               "--prop-step around this value and re-run for a finer search, or "
               "ask about adding a regression-based optimizer once you've seen "
               "the shape of this sweep.)")
     else:
-        print("No proportion completed successfully -- check the per-proportion logs.")
+        print("No proportion completed successfully, or encoded_space was "
+              "unavailable for every proportion (so est_successful_sequences "
+              "could not be computed) -- check the per-proportion logs.")
     print("=" * 60)
 
 
