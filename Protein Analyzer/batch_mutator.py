@@ -56,7 +56,7 @@ except ImportError:
 # ── Column auto-detection ─────────────────────────────────────────────────────
 
 _REGION_KEYWORDS  = ["region", "mut_region", "mutation_region", "mutregion", "positions"]
-_COPIES_KEYWORDS  = ["copies", "copy", "num_copies", "n_copies", "count", "replicates"]
+_COPIES_KEYWORDS  = ["copies", "copy", "num_copies", "n_copies", "count", "replicates","num_random_copies"]
 
 
 def _find_column(df_columns, candidates, label):

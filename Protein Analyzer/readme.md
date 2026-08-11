@@ -18,6 +18,19 @@ MKTQRDGHSLGRWSLVLLLLGLVMPLAIIAQVLSYKEAVL,10,8
 
 Upload it to the web app and click the mutation/analyze button. The app uses three modes (random, conservative or scan) to create substituted copies per row, then returns a table with properties for each generated sequence: molecular weight, isoelectric point (pI), GRAVY score, aromaticity, instability index, net charge at pH 7, and secondary structure fractions.
 
+Additional parameters in the CLI version:
+* Cider_kappa
+CIDER κ (kappa) charge-patterning metric from Das & Pappu (2013).
+    Requires localcider: pip install localcider
+* Fractional charge residue 
+FCR = (K + R + E + D + H_ionized) / length
+    H is conditionally included (ionized at pH 7): ~1 - 1/(1 + 10^(pH - pKa_H))
+    At pH 7 with pKa=6.0, H is ~10% ionized, so weight as 0.1
+* Net charge per residue 
+    NCPR = (K + R + H_ionized - E - D) / length
+    H contributes +0.1 at pH 7 (≈10% protonated)
+
+
 ## Features
 
 ### Mutation modes
@@ -36,6 +49,9 @@ In this programme,
 
 **Scan (single-position exhaustive)** — for each position in the region, every possible conservative substitute is generated as a separate variant, changing only that one position at a time. Useful for identifying which specific residue is driving a property change. The `num_copies` column is ignored in this mode.
 
+New on CLI version:
+Batch_mutator.py contains parallel processing using workers to speed up the process 
+
 ### Combination counter
 An expandable panel shows the total number of possible unique variants for each sequence and region in your CSV, broken down per position. Updates based on whichever mutation mode is selected.
 
@@ -47,3 +63,4 @@ Run locally:
 ```bash
 streamlit run analyzer.py
 ```
+For the CLI versions, how to run the programmes are in the respective files. 
