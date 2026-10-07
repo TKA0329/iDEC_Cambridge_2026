@@ -1,0 +1,9 @@
+__pycache__/
+wandb/
+checkpoints/
+convert/
+notes.md
+*.npz
+results.csv
+model.pt
+inference.py

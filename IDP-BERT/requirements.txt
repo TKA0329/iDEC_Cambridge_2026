@@ -1,0 +1,11 @@
+torch
+transformers==4.46.0
+tokenizers==0.20.3
+numpy
+scikit-learn
+tqdm
+PyYAML
+streamlit
+huggingface_hub
+sentencepiece
+protobuf

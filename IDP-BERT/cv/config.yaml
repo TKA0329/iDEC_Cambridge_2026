@@ -1,0 +1,23 @@
+epochs: 5
+batch_size: 4
+split: 'split0'
+label: cv   # cv, rog, tau
+name: 
+debug: false
+
+network:
+  attn_heads: 16
+  dropout: 0.15
+  fc_layers: 2
+  hidden_layers: 16
+  hidden_size: 256
+  max_position_embeddings: 602
+
+optim:
+  lr: 1.0e-5
+
+sch:
+  factor: 0.1
+  patience: 3
+
+run_name: 
