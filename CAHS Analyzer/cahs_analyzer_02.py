@@ -22,13 +22,10 @@ NOTE ON DATA PROVENANCE:
 - Pace & Scholtz values are taken from Pace & Scholtz, Biophys J. 1998;
   75(1):422-7 (verified against the published table).
 - Eisenberg consensus hydrophobicity values are the commonly reproduced
-  Eisenberg (1984) consensus scale. Double check both tables against the
-  original papers before using results in anything you publish -- these
-  are screening heuristics, not a replacement for AGADIR / experimental
-  CD / IUPred3, which you should still run on your final shortlist.
+  Eisenberg (1984) consensus scale. 
 
 USAGE:
-    python motif1_helix_scorer.py input.csv output.csv
+    python cahs_analyzer_02.py input.csv output.csv
 
 INPUT CSV:
     Must have a column named "sequence" (case-insensitive).

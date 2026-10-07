@@ -17,7 +17,7 @@ KEY DIFFERENCE FROM motif1_helix_scorer.py:
   file size.
 
 USAGE:
-    python motif1_filter_pipeline.py input.csv output.csv
+    python cahs_analyzer_03.py input.csv output.csv
 
 INPUT CSV:
     Must have a column named "sequence" (case-insensitive). An optional
